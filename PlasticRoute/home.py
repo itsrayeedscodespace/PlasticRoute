@@ -8,9 +8,16 @@ from geopy.distance import geodesic
 import networkx as nx
 import numpy as np
 import time
+from geopy import distance as geopy_distance
+import pickle
+from global_land_mask import globe
+
 
 # Set page configuration
 st.set_page_config(page_title="AquaRoute", layout="wide")
+
+with open("zdata.pickle", 'rb') as file:
+    x, y, z = pickle.loads(file.read())
 
 @st.cache_resource
 def load_image():
@@ -66,6 +73,16 @@ def a_star_ocean_path(start, stop, grid):
     except nx.NetworkXNoPath:
         return [], False  # Return empty path and failure flag
 
+@st.cache_data
+def calculate_route(start_coords, stop_coords):
+    # Calculate the great circle distance
+    total_distance = geopy_distance.distance(start_coords, stop_coords).kilometers
+    
+    # For a straight line on the map, we only need start and end points
+    route = [start_coords, stop_coords]
+    
+    return route, f"Route optimized successfully! Total distance: {total_distance:.2f} km"
+
 # Load resources
 img_str = load_image()
 video_str = load_video()
@@ -79,6 +96,10 @@ if 'distance' not in st.session_state:
     st.session_state['distance'] = ''
 if 'map_center' not in st.session_state:
     st.session_state['map_center'] = [27.5, -140.0]  # Mid-Pacific as default center
+if 'optimized_route' not in st.session_state:
+    st.session_state['optimized_route'] = None
+if 'route_message' not in st.session_state:
+    st.session_state['route_message'] = ''
 
 # Section with Map and Inputs
 st.subheader("Plan Your Route")
@@ -90,12 +111,12 @@ col1, col2 = st.columns([2, 1])
 world_grid = generate_world_grid()
 
 with col1:
-    # Create a placeholder for the map
-    map_placeholder = st.empty()
+    # Create a placeholder for the input map
+    input_map_placeholder = st.empty()
 
-    # Initial map creation
+    # Display the input map
     m = folium.Map(location=st.session_state['map_center'], zoom_start=3)
-    map_data = st_folium(m, width=700, height=500, key="map")
+    map_data = st_folium(m, width=700, height=500, key="input_map")
 
     # Handle map clicks
     if map_data['last_clicked'] is not None:
@@ -123,37 +144,60 @@ with col2:
     # Button to Optimize Route
     if st.button("Optimize Route"):
         try:
-            start_coords = list(map(float, start_position.split(',')))
-            stop_coords = list(map(float, stop_position.split(',')))
+            start_coords = tuple(map(float, start_position.split(',')))
+            stop_coords = tuple(map(float, stop_position.split(',')))
             
-            st.write(f"Start coordinates: {start_coords}")
-            st.write(f"Stop coordinates: {stop_coords}")
+            route, message = calculate_route(start_coords, stop_coords)
             
-            if not (is_ocean(*start_coords, world_grid) and is_ocean(*stop_coords, world_grid)):
-                st.error("Start or Stop position must be on the ocean.")
+            if route:
+                st.session_state['optimized_route'] = route
+                st.session_state['route_message'] = message
+                st.session_state['map_center'] = start_coords
             else:
-                # Find the optimized route
-                route, success = a_star_ocean_path(start_coords, stop_coords, world_grid)
-                
-                st.write(f"Route found: {success}")
-                st.write(f"Number of points in route: {len(route)}")
-                
-                if success and len(route) > 1:
-                    # Update the map with the full route at once
-                    m = folium.Map(location=start_coords, zoom_start=3)
-                    folium.Marker(start_coords, popup="Start").add_to(m)
-                    folium.Marker(stop_coords, popup="Stop").add_to(m)
-                    
-                    # Draw the complete route at once
-                    folium.PolyLine(route, color="blue", weight=2.5, opacity=1).add_to(m)
-                    
-                    # Use map_placeholder to avoid flicker
-                    with map_placeholder:
-                        st_folium(m, width=700, height=500, key="map_final")
-                    
-                    st.success("Route optimized successfully!")
-                else:
-                    st.error("No possible ocean route found or route is too short!")
-                
+                st.session_state['optimized_route'] = None
+                st.session_state['route_message'] = message
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.session_state['optimized_route'] = None
+            st.session_state['route_message'] = f"Error: {e}"
+
+# New section for displaying route information and optimized map
+st.subheader("Optimized Route Information")
+
+if st.session_state['optimized_route']:
+    col3, col4 = st.columns([2, 1])
+
+    with col3:
+        # Display the optimized route map
+        m = folium.Map()
+        start_coords = tuple(map(float, st.session_state['start_position'].split(',')))
+        stop_coords = tuple(map(float, st.session_state['stop_position'].split(',')))
+        
+        # Add markers for start and stop
+        folium.Marker(
+            start_coords,
+            popup="Start",
+            icon=folium.Icon(color="green", icon="play")
+        ).add_to(m)
+        folium.Marker(
+            stop_coords,
+            popup="Stop",
+            icon=folium.Icon(color="red", icon="stop")
+        ).add_to(m)
+        
+        # Add the straight line
+        folium.PolyLine([start_coords, stop_coords], color="blue", weight=2.5, opacity=1).add_to(m)
+        
+        # Fit the map to the bounds of the route
+        m.fit_bounds([start_coords, stop_coords])
+        
+        st_folium(m, width=700, height=500, key="optimized_map")
+
+    with col4:
+        # Display route information
+        st.success(st.session_state['route_message'])
+        st.write(f"Number of points in route: {len(st.session_state['optimized_route'])}")
+        st.write(f"Start position: {st.session_state['start_position']}")
+        st.write(f"Stop position: {st.session_state['stop_position']}")
+
+elif st.session_state['route_message']:
+    st.error(st.session_state['route_message'])
